@@ -9,8 +9,6 @@ The system enables multiple clients to connect to a central server and exchange 
 The server component was developed collaboratively as part of a group project, focusing on connection handling, message broadcasting, and concurrency control.
 The client component was independently implemented, handling user interaction, server communication, and asynchronous message reception.
 
-In short: distributed system, shared infrastructure, clear ownership boundaries.
-
 ⸻
 
 Key Features
@@ -32,17 +30,13 @@ High-level flow:
 	4.	Messages are received and broadcast to all connected clients
 	5.	Clients handle sending and receiving concurrently
 
-This design prioritizes clarity and correctness over unnecessary complexity, which is exactly what you want in foundational networking work.
-
 ⸻
 
 Tech Stack
 	•	Language: Python
 	•	Networking: socket
 	•	Concurrency: threading
-	•	Environment: Localhost / LAN testing
-
-No frameworks. No magic. Just fundamentals doing their job.
+	•	Environment: Localhost / LAN 
 
 ⸻
 
@@ -61,7 +55,7 @@ python server.py
 
 Running the Client
 
-python client.py
+python mbylut003_client.py
 
 	•	Enter the server IP address and port
 	•	Provide a nickname when prompted
@@ -73,11 +67,10 @@ Run multiple client instances to simulate concurrent users.
 
 Project Structure
 
-├── server.py        # Multithreaded TCP server (group-developed)
-├── client.py        # TCP client implementation (independently developed)
+├── server.py        # Multithreaded TCP server 
+├── mbylut003_client.py        # TCP client implementation 
 ├── README.md
 ├── report.pdf       # Technical report and analysis
-
 
 ⸻
 
@@ -91,8 +84,6 @@ This project demonstrates:
 	•	Collaborative development with clear component ownership
 	•	Translating technical implementation into structured documentation
 
-Translation: skills that scale beyond coursework.
-
 ⸻
 
 Notes
@@ -104,5 +95,4 @@ Author Contributions
 	•	Server: Group-developed as part of a networking coursework project
 	•	Client & Documentation: Independently implemented and authored
 
-Clear boundaries. Clear accountability. Everyone wins.
 
