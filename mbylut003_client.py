@@ -1,14 +1,30 @@
 import socket
 import threading
 
+COMMANDS = {
+    "MEMBERS": "/members",
+    "BROADCAST": "/broadcast",
+    "HIDE": "/hide",
+    "REVEAL": "/reveal",
+    "CREATE_ROOM": "/create_room",
+    "GET_ROOMS": "/get_rooms",
+    "JOIN": "/join",
+    "LEAVE": "/leave",
+    "ROOM": "/room"
+}
+
 def receive(client_sock):
     while True:
         try:
-            message = client_sock.recv(1024).decode('ascii')
-            print(message)
-        except ConnectionAbortedError:
+            data = client_sock.recv(1024)
+            if not data:
+                break
+            print(data.decode("ascii"))
+        except OSError:
             break
-#convert menu options to messages forr server
+
+def send(client_sock, msg):
+    client_sock.send(msg.encode("ascii"))
 
 def main():
     host = input("Enter server IP address: ")
@@ -18,18 +34,16 @@ def main():
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_sock.connect((host, port))
 
-    # Send nickname to the server
-    client_sock.send(nickname.encode('ascii'))
+    send(client_sock, nickname)
 
-    # Start a thread to receive messages from the server
-    receive_thread = threading.Thread(target=receive, args=(client_sock,))
+    receive_thread = threading.Thread(
+        target=receive, args=(client_sock,), daemon=True
+    )
     receive_thread.start()
-    
-    
 
     while True:
         print('Select an option from the menu:')
-        menu="""
+        menu = """
                  a. view list of available users
                  b. send message to all connected users
                  c. hide your connection 
@@ -40,59 +54,49 @@ def main():
                  h. send a message in a chatroom
                  i. exit a chatroom
                  j. quit \n"""
-        message = input(menu)
-        if message == "a":
-            msg="/members"
-            client_sock.send(msg.encode('ascii'))
-        elif message == "b":
-             msg="/broadcast"
-             client_sock.send(msg.encode('ascii'))
-             msg = input()
-             client_sock.send(msg.encode('ascii'))
-        elif message == "c":
-             msg="/hide"
-             client_sock.send(msg.encode('ascii'))
-             msg = input()
-             client_sock.send(msg.encode('ascii'))
-        elif message == "d":
-             msg="/reveal"
-             client_sock.send(msg.encode('ascii'))
-             msg = input()
-             client_sock.send(msg.encode('ascii'))
-        elif message == "e":
-            chatname=input("Please enter the name you want to give your chatroom: \n")
-            msg="/create_room "+chatname
-            client_sock.send(msg.encode('ascii'))
-            msg = input()
-            client_sock.send(msg.encode('ascii'))
-        elif message == "g":
-            chatname=input("Please enter the name you want to join: \n")
-            msg="/join "+chatname
-            client_sock.send(msg.encode('ascii'))
-            msg = input()
-            client_sock.send(msg.encode('ascii'))
-        elif message == "f":
-             msg = "/get_rooms "
-             client_sock.send(msg.encode('ascii'))
-        elif message == "i":
-            chatname=input("Please enter the name you want to exit: \n")
-            msg="/leave "+chatname
-            client_sock.send(msg.encode('ascii'))
-            msg = input()
-            client_sock.send(msg.encode('ascii'))
-        elif message == "h":
-             chatname=input("Please enter the name you want to send message to: \n")
-             txt= input("Please enter your message: \n")             
-             msg="/room "+chatname+" "+txt
-             client_sock.send(msg.encode('ascii'))
-             msg = input()
-             client_sock.send(msg.encode('ascii'))   
-    
+        choice = input(menu).strip().lower()
 
-    client_sock.close()
+        if choice == "a":
+            send(client_sock, COMMANDS["MEMBERS"])
+
+        elif choice == "b":
+            send(client_sock, COMMANDS["BROADCAST"])
+            msg = input()
+            send(client_sock, msg)
+
+        elif choice == "c":
+            send(client_sock, COMMANDS["HIDE"])
+
+        elif choice == "d":
+            send(client_sock, COMMANDS["REVEAL"])
+
+        elif choice == "e":
+            chatname = input("Please enter the name you want to give your chatroom: \n")
+            send(client_sock, f"{COMMANDS['CREATE_ROOM']} {chatname}")
+
+        elif choice == "f":
+            send(client_sock, COMMANDS["GET_ROOMS"])
+
+        elif choice == "g":
+            chatname = input("Please enter the name you want to join: \n")
+            send(client_sock, f"{COMMANDS['JOIN']} {chatname}")
+
+        elif choice == "h":
+            chatname = input("Please enter the name you want to send message to: \n")
+            txt = input("Please enter your message: \n")
+            send(client_sock, f"{COMMANDS['ROOM']} {chatname} {txt}")
+
+        elif choice == "i":
+            chatname = input("Please enter the name you want to exit: \n")
+            send(client_sock, f"{COMMANDS['LEAVE']} {chatname}")
+
+        elif choice == "j":
+            print("Disconnecting...")
+            client_sock.close()
+            break
+
+        else:
+            print("Invalid option. Please try again.")
 
 if __name__ == "__main__":
     main()
-
-    
-    
