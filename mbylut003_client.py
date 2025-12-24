@@ -10,21 +10,28 @@ COMMANDS = {
     "GET_ROOMS": "/get_rooms",
     "JOIN": "/join",
     "LEAVE": "/leave",
-    "ROOM": "/room"
+    "ROOM": "/room",
+    "QUIT": "/quit"
 }
 
+FORMAT = "utf-8"  # must match server
+
+
 def receive(client_sock):
+    # continuously listen for server messages
     while True:
         try:
             data = client_sock.recv(1024)
             if not data:
                 break
-            print(data.decode("ascii"))
+            print(data.decode(FORMAT))
         except OSError:
             break
 
+
 def send(client_sock, msg):
-    client_sock.send(msg.encode("ascii"))
+    client_sock.send(msg.encode(FORMAT))
+
 
 def main():
     host = input("Enter server IP address: ")
@@ -34,8 +41,10 @@ def main():
     client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_sock.connect((host, port))
 
+    # send nickname immediately after connecting
     send(client_sock, nickname)
 
+    # start background thread to receive server messages
     receive_thread = threading.Thread(
         target=receive, args=(client_sock,), daemon=True
     )
@@ -61,7 +70,7 @@ def main():
 
         elif choice == "b":
             send(client_sock, COMMANDS["BROADCAST"])
-            msg = input()
+            msg = input()  # server prompts for message
             send(client_sock, msg)
 
         elif choice == "c":
@@ -71,32 +80,34 @@ def main():
             send(client_sock, COMMANDS["REVEAL"])
 
         elif choice == "e":
-            chatname = input("Please enter the name you want to give your chatroom: \n")
+            chatname = input("Please enter the name you want to give your chatroom:\n")
             send(client_sock, f"{COMMANDS['CREATE_ROOM']} {chatname}")
 
         elif choice == "f":
             send(client_sock, COMMANDS["GET_ROOMS"])
 
         elif choice == "g":
-            chatname = input("Please enter the name you want to join: \n")
+            chatname = input("Please enter the name you want to join:\n")
             send(client_sock, f"{COMMANDS['JOIN']} {chatname}")
 
         elif choice == "h":
-            chatname = input("Please enter the name you want to send message to: \n")
-            txt = input("Please enter your message: \n")
+            chatname = input("Please enter the name you want to send message to:\n")
+            txt = input("Please enter your message:\n")
             send(client_sock, f"{COMMANDS['ROOM']} {chatname} {txt}")
 
         elif choice == "i":
-            chatname = input("Please enter the name you want to exit: \n")
+            chatname = input("Please enter the name you want to exit:\n")
             send(client_sock, f"{COMMANDS['LEAVE']} {chatname}")
 
         elif choice == "j":
             print("Disconnecting...")
+            send(client_sock, COMMANDS["QUIT"])  # clean exit
             client_sock.close()
             break
 
         else:
             print("Invalid option. Please try again.")
+
 
 if __name__ == "__main__":
     main()
