@@ -191,6 +191,24 @@ class Server:
                     # server just listens without doing anything
                     # left here intentionally for future extensions
                     pass
+                elif decoded.startswith("/dm"):
+                parts = decoded.split(" ", 2)
+                if len(parts) < 3:
+                    client.send("Usage: /dm <user> <message>".encode(self.FORMAT))
+                    continue
+                    target_nick = parts[1]
+                    dm_msg = parts[2]
+                    if target_nick in self.nicknames:
+                        idx = self.nicknames.index(target_nick)
+                        target_client = self.clients[idx]
+                        
+                        timestamp = datetime.now().strftime("%H:%M")
+                        formatted_msg = (f"\n[DM | {timestamp}]\n"
+                                         f"{nick}: {dm_msg}"
+                                        )
+                        target_client.send(formatted_msg.encode(self.FORMAT))
+                    else:
+                        client.send("User not found.".encode(self.FORMAT))
 
 
             except ConnectionResetError:
@@ -264,3 +282,4 @@ if __name__ == "__main__":
     # parse arguments to Server class
     server = Server(arguments.host, arguments.port)
     server.receive()  # start listening
+
