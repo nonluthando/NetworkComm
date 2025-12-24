@@ -242,3 +242,4 @@ if __name__ == "__main__":  # main method
     # parse arguments to Server class
     server = Server(arguments.host, arguments.port)
     server.receive()  # calling the receive function
+
