@@ -2,7 +2,8 @@
 TCP Client–Server Chat Application
 
 # Overview
-This repository contains a Python-based TCP client–server chat application designed to demonstrate core networking, concurrency, and protocol-design concepts. The system enables multiple clients to connect to a central server and exchange messages in real time using socket programming and multithreading.
+This repository contains a Python-based TCP client–server chat application designed to demonstrate core networking, concurrency, and protocol-design concepts. 
+The system enables multiple clients to connect to a central server and exchange messages in real time using socket programming and multithreading.
 
 The server component was originally developed collaboratively as part of a group project, focusing on connection handling, concurrency control, and message routing.
 Additional enhancements to the server were independently implemented, including structured message logging, improved error handling, clearer message formatting, and more robust coordination between clients.
@@ -11,21 +12,21 @@ The client component was independently implemented, handling user interaction, s
 
 The project prioritises correctness, clarity, and real-world networking behaviour over UI complexity.
 
-# Key Features
+## Key Features
 TCP socket–based communication
-	•	Multithreaded server supporting multiple concurrent clients
-	•	Server-side enhancements:
-	•	Structured logging of connections, disconnections, and message events
-	•	Improved error handling for unexpected client disconnects
-	•	Clear, timestamped message formatting
-	•	Asynchronous message handling on the client side
-	•	Simple, explicit text-based communication protocol
-	•	Broadcast messaging, private messaging, and chat rooms
-	•	User visibility controls (hide / reveal without disconnecting)
-	•	Graceful client connection retries when the server is unavailable
-	•	Clear separation between server and client responsibilities
+• Multithreaded server supporting multiple concurrent clients
+Server-side enhancements:
+• Structured logging of connections, disconnections, and message events
+• Improved error handling for unexpected client disconnects
+• Clear, timestamped message formatting
+• Asynchronous message handling on the client side
+• Simple, explicit text-based communication protocol
+• Broadcast messaging, private messaging, and chat rooms
+• User visibility controls (hide / reveal without disconnecting)
+• Graceful client connection retries when the server is unavailable
+• Clear separation between server and client responsibilities
 
-# Architecture
+## Architecture
 
 1.	Server listens on a specified host and port
 	2.	Clients connect and register with a nickname
@@ -48,12 +49,12 @@ Prerequisites
 	•	Python 3.x
 	•	Basic understanding of TCP networking
 
-Running the Server
+### Running the Server
 
 python server.py
 	•	The server will begin listening for incoming client connections
 
-Running the Client
+### Running the Client
 
 python mbylut003_client.py
 
@@ -79,11 +80,11 @@ This project demonstrates:
 	•	Enhancing existing systems with logging, error handling, and maintainability improvements
 
 
-# Notes
+## Notes
 	•	This project prioritizes conceptual correctness and clarity over production-grade security.
 	•	Authentication, encryption, and fault tolerance are intentionally out of scope.
 
-	Limitations
+## Limitations
 	•	No authentication or access control: Users are identified only by nicknames, with no verification or protection against impersonation.
 	•	No encryption: All messages are transmitted in plain text over TCP; confidentiality and integrity are not guaranteed.
 	•	Implicit message framing: The protocol relies on command sequencing rather than explicit message delimiters or length-prefixed frames, which limits scalability and robustness.
@@ -102,7 +103,7 @@ This project demonstrates:
 	•	Configurable logging: Support log levels and output destinations (e.g. files, structured logs) for production-style monitoring.
 	•	Testing and validation: Introduce automated tests for protocol handling, concurrency, and failure scenarios.
 	
-# Author Contributions
+## Author Contributions
 	•	Server: Group-developed as part of a networking coursework project, with independent enhancements including structured message logging, improved error handling, and message formatting
 	•	Client & Documentation: Independently implemented and authored
 
