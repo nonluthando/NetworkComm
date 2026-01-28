@@ -29,10 +29,10 @@ Server-side enhancements:
 ## Architecture
 
 1.	Server listens on a specified host and port
-	2.	Clients connect and register with a nickname
-	3.	Server spawns a dedicated handler thread per client
-	4.	Messages are routed through the server (broadcast, private, or room-based)
-	5.	Clients handle sending and receiving concurrently using separate threads
+2.	Clients connect and register with a nickname
+3.	Server spawns a dedicated handler thread per client
+4.	Messages are routed through the server (broadcast, private, or room-based)
+5.	Clients handle sending and receiving concurrently using separate threads
 
 All communication is routed through the server to simplify coordination and maintain consistent state.
 
