@@ -23,7 +23,7 @@ class Server:
 
         self.host = host
         self.port = port
-        self.FORMAT = 'ascii'  # keeping ascii for simplicity
+        self.FORMAT = 'utf-8'  # must match client
 
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.bind((host, port))
@@ -31,7 +31,9 @@ class Server:
 
         self.clients = []      # active clients
         self.nicknames = []    # usernames of the active clients
+        self.hidden = set()    # nicknames currently hidden from /members
         self.chatrooms = {}    # chatroom name -> list of members
+        self.lock = threading.Lock()
 
 
     # modified so broadcasted message does not show to the client that sent the message
@@ -40,7 +42,10 @@ class Server:
         message = message.encode(self.FORMAT)
         for client in self.clients:
             if client != this_client:
-                client.send(message)
+                try:
+                    client.send(message)
+                except OSError:
+                    pass
 
 
     def handle(self, client):
@@ -50,6 +55,8 @@ class Server:
         while True:
             try:
                 message = client.recv(1024)
+                if not message:
+                    raise ConnectionResetError
                 decoded = message.decode(self.FORMAT)
 
                 # list active members
@@ -57,33 +64,22 @@ class Server:
                     heading = "Active chat members are:\n"
                     names = ''
 
-                    for i, nickname in enumerate(self.nicknames, start=1):
+                    visible = [n for n in self.nicknames if n not in self.hidden]
+                    for i, nickname in enumerate(visible, start=1):
                         names += f"{i}. {nickname}\n"
 
                     client.send((heading + names).encode(self.FORMAT))
 
 
                 # Added option to appear anonymous and to stop appearing anonymous
-                elif decoded.startswith("/hide"):
-                    # Prompt client to send nickname
-                    client.send('Enter nickname to hide'.encode(self.FORMAT))
-                    nickname_to_remove = client.recv(1024).decode(self.FORMAT)
-
-                    # remove nickname from the visible list
-                    if nickname_to_remove in self.nicknames:
-                        self.nicknames.remove(nickname_to_remove)
-                        client.send('You are now invisible!'.encode(self.FORMAT))
+                elif decoded == "/hide":
+                    self.hidden.add(nick)
+                    client.send('You are now invisible!'.encode(self.FORMAT))
 
 
-                elif decoded.startswith("/reveal"):
-                    # Prompt client to send nickname
-                    client.send('Enter nickname to show'.encode(self.FORMAT))
-                    nickname_to_add = client.recv(1024).decode(self.FORMAT)
-
-                    # avoid duplicate nicknames
-                    if nickname_to_add not in self.nicknames:
-                        self.nicknames.append(nickname_to_add)
-                        client.send('You are now visible to other users!'.encode(self.FORMAT))
+                elif decoded == "/reveal":
+                    self.hidden.discard(nick)
+                    client.send('You are now visible to other users!'.encode(self.FORMAT))
 
 
                 # added the option for clients to broadcast messages to other clients through the server
@@ -180,56 +176,60 @@ class Server:
                 elif decoded == "/quit":
                     logger.info("Client requested disconnect", extra={"nickname": nick})
                     client.send("Server: Bye".encode(self.FORMAT))
-                    self.broadcast(f"{nick} is offline", client)
-
-                    self.clients.remove(client)
-                    self.nicknames.remove(nick)
-                    client.close()
+                    self.cleanup(client, nick)
                     break
+
+                elif decoded.startswith("/dm"):
+                    parts = decoded.split(" ", 2)
+                    if len(parts) < 3:
+                        client.send("Usage: /dm <user> <message>".encode(self.FORMAT))
+                        continue
+                    target_nick, dm_msg = parts[1], parts[2]
+                    if target_nick in self.nicknames:
+                        target_client = self.clients[self.nicknames.index(target_nick)]
+                        timestamp = datetime.now().strftime("%H:%M")
+                        formatted_msg = f"\n[DM | {timestamp}]\n{nick}: {dm_msg}"
+                        target_client.send(formatted_msg.encode(self.FORMAT))
+                        client.send("DM sent.".encode(self.FORMAT))
+                    else:
+                        client.send("User not found.".encode(self.FORMAT))
+
 
                 else:
                     # server just listens without doing anything
                     # left here intentionally for future extensions
                     pass
-                elif decoded.startswith("/dm"):
-                parts = decoded.split(" ", 2)
-                if len(parts) < 3:
-                    client.send("Usage: /dm <user> <message>".encode(self.FORMAT))
-                    continue
-                    target_nick = parts[1]
-                    dm_msg = parts[2]
-                    if target_nick in self.nicknames:
-                        idx = self.nicknames.index(target_nick)
-                        target_client = self.clients[idx]
-                        
-                        timestamp = datetime.now().strftime("%H:%M")
-                        formatted_msg = (f"\n[DM | {timestamp}]\n"
-                                         f"{nick}: {dm_msg}"
-                                        )
-                        target_client.send(formatted_msg.encode(self.FORMAT))
-                    else:
-                        client.send("User not found.".encode(self.FORMAT))
 
 
             except ConnectionResetError:
                 # client crashed or closed terminal without warning
                 logger.warning("Client closed connection unexpectedly", extra={"nickname": nick})
-                self.broadcast(f"Server: {nick} is offline.\n", client)
-
-                self.clients.remove(client)
-                self.nicknames.remove(nick)
+                self.cleanup(client, nick)
                 break
 
 
             except Exception:
                 # catch-all for unexpected issues so the server keeps running
                 logger.exception("Unhandled error in client handler", extra={"nickname": nick})
+                self.cleanup(client, nick)
+                break
 
-                self.broadcast(f"{nick} is offline", client)
+
+    def cleanup(self, client, nick):
+        # remove a client from all shared state, tolerating repeated calls
+        with self.lock:
+            if client in self.clients:
                 self.clients.remove(client)
                 self.nicknames.remove(nick)
-                client.close()
-                break
+            self.hidden.discard(nick)
+            for members in self.chatrooms.values():
+                if client in members:
+                    members.remove(client)
+        try:
+            self.broadcast(f"Server: {nick} is offline.", client)
+        except OSError:
+            pass
+        client.close()
 
 
     def receive(self):

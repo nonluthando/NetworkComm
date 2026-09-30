@@ -51,7 +51,7 @@ Prerequisites
 
 ### Running the Server
 
-python server.py
+python server3.py
 	•	The server will begin listening for incoming client connections
 
 ### Running the Client
