@@ -1,5 +1,6 @@
 import socket
 import threading
+import time
 
 COMMANDS = {
     "MEMBERS": "/members",
@@ -11,6 +12,7 @@ COMMANDS = {
     "JOIN": "/join",
     "LEAVE": "/leave",
     "ROOM": "/room",
+    "DM": "/dm",
     "QUIT": "/quit"
 }
 
@@ -38,8 +40,20 @@ def main():
     port = int(input("Enter server port number: "))
     nickname = input("Enter your nickname: ")
 
-    client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_sock.connect((host, port))
+    client_sock = None
+    for attempt in range(1, 6):
+        try:
+            client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            client_sock.connect((host, port))
+            break
+        except OSError:
+            client_sock.close()
+            client_sock = None
+            print(f"Server unavailable, retrying ({attempt}/5)...")
+            time.sleep(2)
+    if client_sock is None:
+        print("Could not connect to the server.")
+        return
 
     # send nickname immediately after connecting
     send(client_sock, nickname)
@@ -62,7 +76,8 @@ def main():
                  g. join a chatroom
                  h. send a message in a chatroom
                  i. exit a chatroom
-                 j. quit \n"""
+                 j. quit
+                 k. send a direct message \n"""
         choice = input(menu).strip().lower()
 
         if choice == "a":
@@ -98,6 +113,11 @@ def main():
         elif choice == "i":
             chatname = input("Please enter the name you want to exit:\n")
             send(client_sock, f"{COMMANDS['LEAVE']} {chatname}")
+
+        elif choice == "k":
+            user = input("Enter the nickname to message:\n")
+            txt = input("Please enter your message:\n")
+            send(client_sock, f"{COMMANDS['DM']} {user} {txt}")
 
         elif choice == "j":
             print("Disconnecting...")
