@@ -10,17 +10,19 @@ Additional enhancements to the server were independently implemented, including 
 
 The client component was independently implemented, handling user interaction, server communication, connection retry logic, and asynchronous message reception.
 
-The project prioritises correctness, clarity, and real-world networking behaviour over UI complexity.
+The project prioritises correctness, security and clear protocol design over UI complexity.
 
 ## Key Features
-TCP socket–based communication
+TCP socket–based communication, secured with TLS
+• Authenticated users (salted scrypt), lockout, rate limiting and input validation
+• Length-prefixed JSON framing
 • Multithreaded server supporting multiple concurrent clients
 Server-side enhancements:
 • Structured logging of connections, disconnections, and message events
 • Improved error handling for unexpected client disconnects
 • Clear, timestamped message formatting
 • Asynchronous message handling on the client side
-• Simple, explicit text-based communication protocol
+• Explicit, documented wire protocol (see protocol.py)
 • Broadcast messaging, private messaging, and chat rooms
 • User visibility controls (hide / reveal without disconnecting)
 • Graceful client connection retries when the server is unavailable
@@ -45,25 +47,28 @@ All communication is routed through the server to simplify coordination and main
 
 # Getting Started
 
-Prerequisites
-	•	Python 3.x
-	•	Basic understanding of TCP networking
+Prerequisites: Python 3.10+ and OpenSSL (to generate a test certificate). No third-party packages.
 
-### Running the Server
+```
+./gen_cert.sh                      # one-off: creates certs/server.crt and certs/server.key
+python server3.py                  # listens on 127.0.0.1:44444 over TLS
+python mbylut003_client.py         # --host, --port and --cafile are optional
+python -m unittest -v              # 28 end-to-end tests
+```
 
-python server3.py
-	•	The server will begin listening for incoming client connections
+On first connection choose **register**, then log in on later runs. Run several clients to simulate users.
+Accounts are stored (salted scrypt hashes only) in `users.json`.
 
-### Running the Client
+# Security design
 
-python mbylut003_client.py
+See [THREAT_MODEL.md](THREAT_MODEL.md) for the full table mapping each threat to its mitigation and test.
 
-	•	Enter the server IP address and port ( default: 127.0.0.1, 44444)
-	•	Provide a nickname when prompted
-	•	Start sending messages once connected
-
-Run multiple client instances to simulate concurrent users.
-
+- **TLS 1.2+** for all traffic; the client verifies certificate and hostname.
+- **Authentication** with salted scrypt hashes, account lockout and constant-time comparison.
+- **Length-prefixed JSON framing** with a 16 KiB cap, replacing the old implicit one-`recv`-one-message assumption.
+- **Input validation** on every field, including rejection of control characters.
+- **Authorisation**: only room members can post; the sender identity is always the authenticated user.
+- **Abuse controls**: per-connection token-bucket rate limiting, connection cap and timeouts.
 
 # Learning Outcomes
 
@@ -81,30 +86,15 @@ This project demonstrates:
 
 
 ## Notes
-	•	This project prioritizes conceptual correctness and clarity over production-grade security.
-	•	Authentication, encryption, and fault tolerance are intentionally out of scope.
+	•	Built to study protocol and security design; it has not been independently audited.
 
 ## Limitations
-	•	No authentication or access control: Users are identified only by nicknames, with no verification or protection against impersonation.
-	•	No encryption: All messages are transmitted in plain text over TCP; confidentiality and integrity are not guaranteed.
-	•	Implicit message framing: The protocol relies on command sequencing rather than explicit message delimiters or length-prefixed frames, which limits scalability and robustness.
-	•	In-memory state only: Client connections, chat rooms, and visibility states are not persisted and are lost when the server shuts down.
-	•	Single-server design: The system does not support horizontal scaling, load balancing, or fault tolerance.
-	•	Terminal-based interface: The client uses a simple CLI, with no graphical user interface or rich interaction.
-	•	Basic error recovery: While common network errors are handled gracefully, more advanced recovery strategies are not implemented.
+	•	No end-to-end encryption: the server can read all messages.
+	•	Only accounts persist; rooms, sessions and rate-limit state are in memory.
+	•	Rate limiting and lockout are per connection / per account, not per IP.
+	•	Thread-per-connection design; single server; terminal client.
+	•	Self-signed certificate for local use.
 
 ## Future Enhancements
-	•	Explicit protocol framing: Introduce length-prefixed or delimiter-based message framing to improve reliability and scalability.
-	•	Authentication and authorization: Add user authentication and basic access controls for private messages and chat rooms.
-	•	Encryption: Secure client–server communication using TLS or similar mechanisms.
-	•	Persistent storage: Store user sessions, chat history, and room metadata using a database or file-based persistence.
-	•	Improved scalability: Refactor the server to support asynchronous I/O or distributed architectures.
-	•	Enhanced client experience: Add message alignment, richer formatting, or a graphical client interface.
-	•	Configurable logging: Support log levels and output destinations (e.g. files, structured logs) for production-style monitoring.
-	•	Testing and validation: Introduce automated tests for protocol handling, concurrency, and failure scenarios.
-	
-## Author Contributions
-	•	Server: Group-developed as part of a networking coursework project, with independent enhancements including structured message logging, improved error handling, and message formatting
-	•	Client & Documentation: Independently implemented and authored
-
-
+	•	End-to-end encryption between clients, persistent chat history, per-IP throttling,
+	  an asyncio server, and certificate rotation tooling.

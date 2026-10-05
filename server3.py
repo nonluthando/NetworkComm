@@ -1,285 +1,357 @@
-import sys
-import threading
-import socket
+"""TLS chat server: authenticated users, framed JSON protocol, rate limiting."""
+
 import argparse
 import logging
+import re
+import socket
+import ssl
+import threading
+import time
 from datetime import datetime
 
-
-# ---------------- LOGGING SETUP ----------------
-# logging instead of print so we can actually trace what happens when things break
+from auth import UserStore
+from protocol import ProtocolError, recv_frame, send_frame
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-
 logger = logging.getLogger("chat-server")
+
+ROOM_RE = re.compile(r"^[A-Za-z0-9_-]{1,30}$")
+MAX_TEXT = 2000
+HANDSHAKE_TIMEOUT = 10     # seconds to complete the TLS handshake
+AUTH_TIMEOUT = 30          # seconds to authenticate after connecting
+IDLE_TIMEOUT = 900         # seconds of silence before dropping a session
+MAX_AUTH_ATTEMPTS = 5
+RATE_BURST = 10            # messages allowed in a burst
+RATE_PER_SEC = 5           # sustained messages per second
+MAX_VIOLATIONS = 10        # rate-limit hits before the connection is dropped
+
+
+def clean_text(value):
+    """Return value if it is a sane single-line string, else None.
+
+    Control characters are refused so a user cannot inject terminal escape
+    sequences into other users' consoles.
+    """
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_TEXT:
+        return None
+    if any(ord(c) < 32 or ord(c) == 127 for c in value):
+        return None
+    return value
+
+
+class TokenBucket:
+    def __init__(self, burst, per_sec):
+        self.capacity = burst
+        self.tokens = float(burst)
+        self.per_sec = per_sec
+        self.stamp = time.monotonic()
+
+    def allow(self):
+        now = time.monotonic()
+        self.tokens = min(self.capacity, self.tokens + (now - self.stamp) * self.per_sec)
+        self.stamp = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+
+class Session:
+    def __init__(self, sock, address):
+        self.sock = sock
+        self.address = address
+        self.nick = None
+        self.hidden = False
+        self.rooms = set()
+        self._send_lock = threading.Lock()  # frames from many threads must not interleave
+
+    def send(self, obj):
+        try:
+            with self._send_lock:
+                send_frame(self.sock, obj)
+            return True
+        except (OSError, ProtocolError):
+            return False
+
+    def info(self, text):
+        self.send({"type": "info", "text": text})
+
+    def error(self, text):
+        self.send({"type": "error", "text": text})
 
 
 class Server:
+    def __init__(self, host, port, certfile, keyfile, users_path="users.json", max_clients=100):
+        self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        self.ctx.load_cert_chain(certfile, keyfile)
 
-    def __init__(self, host, port):
-
-        self.host = host
-        self.port = port
-        self.FORMAT = 'utf-8'  # must match client
-
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server.bind((host, port))
-        self.server.listen()
-
-        self.clients = []      # active clients
-        self.nicknames = []    # usernames of the active clients
-        self.hidden = set()    # nicknames currently hidden from /members
-        self.chatrooms = {}    # chatroom name -> list of members
+        self.users = UserStore(users_path)
+        self.max_clients = max_clients
         self.lock = threading.Lock()
+        self.sessions = {}   # lower-case username -> Session
+        self.rooms = {}      # room name -> set of lower-case usernames
+        self._count = 0
+        self._closing = False
 
+        self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.listener.bind((host, port))
+        self.listener.listen()
+        self.host, self.port = self.listener.getsockname()[:2]
 
-    # modified so broadcasted message does not show to the client that sent the message
-    def broadcast(self, message, this_client):
+    # ---------------- accept loop ----------------
 
-        message = message.encode(self.FORMAT)
-        for client in self.clients:
-            if client != this_client:
-                try:
-                    client.send(message)
-                except OSError:
-                    pass
-
-
-    def handle(self, client):
-        # get the nickname of the client
-        nick = self.nicknames[self.clients.index(client)]
-
-        while True:
+    def serve_forever(self):
+        logger.info("Listening (TLS) on %s:%s", self.host, self.port)
+        while not self._closing:
             try:
-                message = client.recv(1024)
-                if not message:
-                    raise ConnectionResetError
-                decoded = message.decode(self.FORMAT)
-
-                # list active members
-                if decoded == "/members":
-                    heading = "Active chat members are:\n"
-                    names = ''
-
-                    visible = [n for n in self.nicknames if n not in self.hidden]
-                    for i, nickname in enumerate(visible, start=1):
-                        names += f"{i}. {nickname}\n"
-
-                    client.send((heading + names).encode(self.FORMAT))
-
-
-                # Added option to appear anonymous and to stop appearing anonymous
-                elif decoded == "/hide":
-                    self.hidden.add(nick)
-                    client.send('You are now invisible!'.encode(self.FORMAT))
-
-
-                elif decoded == "/reveal":
-                    self.hidden.discard(nick)
-                    client.send('You are now visible to other users!'.encode(self.FORMAT))
-
-
-                # added the option for clients to broadcast messages to other clients through the server
-                elif decoded == "/broadcast":
-                    client.send("Enter your message: ".encode(self.FORMAT))
-                    client_msg = client.recv(1024).decode(self.FORMAT)
-
-                    # WhatsApp-style formatting (timestamp + separation)
-                    timestamp = datetime.now().strftime("%H:%M")
-                    formatted_msg = (
-                        f"\n──────────────\n"
-                        f"{nick}  {timestamp}\n"
-                        f"{client_msg}\n"
-                        f"──────────────"
-                    )
-
-                    logger.info("Broadcast message", extra={"sender": nick})
-                    self.broadcast(formatted_msg, client)
-                    client.send("Message broadcasted!".encode(self.FORMAT))
-
-
-                # create a new chatroom
-                elif decoded.startswith("/create_room"):
-                    room_name = decoded.split(" ")[1]
-
-                    if room_name not in self.chatrooms:
-                        self.chatrooms[room_name] = [client]
-                        client.send(
-                            f'Room {room_name} created successfully!'.encode(self.FORMAT))
-                        logger.info("Created new chat room", extra={"room": room_name})
-                    else:
-                        client.send(
-                            f'Room {room_name} already exists'.encode(self.FORMAT))
-
-
-                # join chatroom
-                elif decoded.startswith("/join"):
-                    room_name = decoded.split(" ")[1]
-                    if room_name in self.chatrooms:
-                        if client not in self.chatrooms[room_name]:
-                            self.chatrooms[room_name].append(client)
-                            client.send(
-                                f'Joined room {room_name} successfully!'.encode(self.FORMAT))
-                            logger.info("Client joined room", extra={"room": room_name, "nickname": nick})
-                        else:
-                            client.send(
-                                f'You are already a member of this room {room_name}.'.encode(self.FORMAT))
-                    else:
-                        client.send(
-                            f'Room {room_name} does not exist!'.encode(self.FORMAT))
-
-
-                # send message in chatroom
-                elif decoded.startswith("/room"):
-                    parts = decoded.split(" ")
-                    room_name = parts[1]
-                    broadcast_msg = " ".join(parts[2:])
-
-                    if room_name in self.chatrooms:
-                        timestamp = datetime.now().strftime("%H:%M")
-                        formatted_msg = (
-                            f"\n[{room_name} | {timestamp}]\n"
-                            f"{nick}: {broadcast_msg}"
-                        )
-
-                        for member in self.chatrooms[room_name]:
-                            member.send(formatted_msg.encode(self.FORMAT))
-                    else:
-                        client.send("Room does not exist".encode(self.FORMAT))
-
-
-                # get a list of chatrooms
-                elif decoded == "/get_rooms":
-                    if len(self.chatrooms) == 0:
-                        client.send("No rooms available".encode(self.FORMAT))
-                    else:
-                        rooms = "Rooms:\n" + "\n".join(self.chatrooms.keys())
-                        client.send(rooms.encode(self.FORMAT))
-
-
-                # leave the chatroom
-                elif decoded.startswith("/leave"):
-                    room_name = decoded.split(" ")[1]
-                    if room_name in self.chatrooms and client in self.chatrooms[room_name]:
-                        self.chatrooms[room_name].remove(client)
-                        client.send(
-                            f'Left room {room_name}'.encode(self.FORMAT))
-                        logger.info("Client left room", extra={"room": room_name, "nickname": nick})
-                    else:
-                        client.send("Room does not exist or not a member".encode(self.FORMAT))
-
-
-                # quit server connection
-                elif decoded == "/quit":
-                    logger.info("Client requested disconnect", extra={"nickname": nick})
-                    client.send("Server: Bye".encode(self.FORMAT))
-                    self.cleanup(client, nick)
-                    break
-
-                elif decoded.startswith("/dm"):
-                    parts = decoded.split(" ", 2)
-                    if len(parts) < 3:
-                        client.send("Usage: /dm <user> <message>".encode(self.FORMAT))
-                        continue
-                    target_nick, dm_msg = parts[1], parts[2]
-                    if target_nick in self.nicknames:
-                        target_client = self.clients[self.nicknames.index(target_nick)]
-                        timestamp = datetime.now().strftime("%H:%M")
-                        formatted_msg = f"\n[DM | {timestamp}]\n{nick}: {dm_msg}"
-                        target_client.send(formatted_msg.encode(self.FORMAT))
-                        client.send("DM sent.".encode(self.FORMAT))
-                    else:
-                        client.send("User not found.".encode(self.FORMAT))
-
-
-                else:
-                    # server just listens without doing anything
-                    # left here intentionally for future extensions
-                    pass
-
-
-            except ConnectionResetError:
-                # client crashed or closed terminal without warning
-                logger.warning("Client closed connection unexpectedly", extra={"nickname": nick})
-                self.cleanup(client, nick)
+                conn, address = self.listener.accept()
+            except OSError:
                 break
+            with self.lock:
+                full = self._count >= self.max_clients
+                if not full:
+                    self._count += 1
+            if full:
+                logger.warning("Rejecting %s: server full", address[0])
+                conn.close()
+                continue
+            threading.Thread(target=self._serve_client, args=(conn, address), daemon=True).start()
 
+    def close(self):
+        self._closing = True
+        self.listener.close()
 
-            except Exception:
-                # catch-all for unexpected issues so the server keeps running
-                logger.exception("Unhandled error in client handler", extra={"nickname": nick})
-                self.cleanup(client, nick)
-                break
+    # ---------------- per-connection ----------------
 
-
-    def cleanup(self, client, nick):
-        # remove a client from all shared state, tolerating repeated calls
-        with self.lock:
-            if client in self.clients:
-                self.clients.remove(client)
-                self.nicknames.remove(nick)
-            self.hidden.discard(nick)
-            for members in self.chatrooms.values():
-                if client in members:
-                    members.remove(client)
+    def _serve_client(self, raw, address):
+        session = None
         try:
-            self.broadcast(f"Server: {nick} is offline.", client)
+            raw.settimeout(HANDSHAKE_TIMEOUT)
+            try:
+                sock = self.ctx.wrap_socket(raw, server_side=True)
+            except (ssl.SSLError, OSError) as exc:
+                logger.warning("TLS handshake failed from %s: %s", address[0], exc)
+                raw.close()
+                return
+            session = Session(sock, address)
+            sock.settimeout(AUTH_TIMEOUT)
+            if not self._authenticate(session):
+                return
+            sock.settimeout(IDLE_TIMEOUT)
+            self._announce(session, f"{session.nick} is online")
+            logger.info("%s logged in from %s", session.nick, address[0])
+            self._command_loop(session)
+        except (ConnectionError, TimeoutError, ProtocolError, OSError) as exc:
+            logger.info("Connection from %s ended: %s", address[0], exc)
+        except Exception:
+            logger.exception("Unhandled error for %s", address[0])
+        finally:
+            if session is not None:
+                self._cleanup(session)
+            else:
+                raw.close()
+            with self.lock:
+                self._count -= 1
+
+    def _authenticate(self, session):
+        for _ in range(MAX_AUTH_ATTEMPTS):
+            msg = recv_frame(session.sock)
+            kind = msg.get("type")
+            user, password = msg.get("user"), msg.get("password")
+            if kind not in ("login", "register") or not isinstance(user, str) \
+                    or not isinstance(password, str):
+                session.error("Expected login or register")
+                continue
+            if kind == "register":
+                err = self.users.register(user, password)
+                if err:
+                    session.error(err)
+                    continue
+                logger.info("Registered new user %s from %s", user, session.address[0])
+            elif not self.users.verify(user, password):
+                logger.warning("Failed login for %r from %s", user[:20], session.address[0])
+                session.error("Invalid username or password")
+                continue
+            with self.lock:
+                if user.lower() in self.sessions:
+                    session.error("That user is already logged in")
+                    continue
+                session.nick = user
+                self.sessions[user.lower()] = session
+            session.send({"type": "auth_ok", "user": user})
+            return True
+        session.error("Too many attempts")
+        return False
+
+    def _command_loop(self, session):
+        bucket = TokenBucket(RATE_BURST, RATE_PER_SEC)
+        violations = 0
+        while True:
+            msg = recv_frame(session.sock)
+            if not bucket.allow():
+                violations += 1
+                session.error("Slow down: rate limit exceeded")
+                if violations >= MAX_VIOLATIONS:
+                    logger.warning("Dropping %s for flooding", session.nick)
+                    return
+                continue
+            handler = self.HANDLERS.get(msg.get("type"))
+            if handler is None:
+                session.error("Unknown command")
+            elif handler(self, session, msg) == "quit":
+                return
+
+    # ---------------- helpers ----------------
+
+    def _snapshot(self, nicks=None, exclude=None):
+        with self.lock:
+            sessions = self.sessions.values() if nicks is None else \
+                [self.sessions[n] for n in nicks if n in self.sessions]
+            return [s for s in sessions if s is not exclude]
+
+    def _announce(self, session, text):
+        for s in self._snapshot(exclude=session):
+            s.info(f"Server: {text}")
+
+    def _cleanup(self, session):
+        with self.lock:
+            if session.nick and self.sessions.get(session.nick.lower()) is session:
+                del self.sessions[session.nick.lower()]
+                for name in list(self.rooms):
+                    self.rooms[name].discard(session.nick.lower())
+            was_logged_in = session.nick is not None
+        try:
+            session.sock.close()
         except OSError:
             pass
-        client.close()
+        if was_logged_in:
+            self._announce(session, f"{session.nick} is offline")
+            logger.info("%s disconnected", session.nick)
 
+    @staticmethod
+    def _stamp():
+        return datetime.now().strftime("%H:%M")
 
-    def receive(self):
-        logger.info("Server is on & listening on %s:%s", self.host, self.port)
+    # ---------------- commands ----------------
 
-        while True:
-            try:
-                client, address = self.server.accept()  # accept clients
+    def cmd_members(self, session, msg):
+        with self.lock:
+            users = sorted(s.nick for s in self.sessions.values() if not s.hidden)
+        session.send({"type": "members", "users": users})
 
-                # receive nickname immediately after connection
-                nickname = client.recv(1024).decode(self.FORMAT)
+    def cmd_hide(self, session, msg):
+        session.hidden = True
+        session.info("You are now invisible!")
 
-                self.nicknames.append(nickname)
-                self.clients.append(client)
+    def cmd_reveal(self, session, msg):
+        session.hidden = False
+        session.info("You are now visible to other users!")
 
-                logger.info("Connected with client", extra={"nickname": nickname, "address": address})
+    def cmd_broadcast(self, session, msg):
+        text = clean_text(msg.get("text"))
+        if text is None:
+            return session.error("Invalid message")
+        frame = {"type": "broadcast", "from": session.nick, "time": self._stamp(), "text": text}
+        for s in self._snapshot(exclude=session):
+            s.send(frame)
+        session.info("Message broadcasted!")
 
-                # confirm successful connection to client
-                client.send('Connected to the server'.encode(self.FORMAT))
+    def cmd_dm(self, session, msg):
+        text = clean_text(msg.get("text"))
+        target = msg.get("to")
+        if text is None or not isinstance(target, str):
+            return session.error("Usage: dm <user> <message>")
+        with self.lock:
+            peer = self.sessions.get(target.lower())
+        # hidden users answer exactly like absent ones, so hiding is not leaky
+        if peer is None or peer.hidden:
+            return session.error("User not found")
+        peer.send({"type": "dm", "from": session.nick, "time": self._stamp(), "text": text})
+        session.info("DM sent.")
 
-                # notify other active clients
-                self.broadcast(f"Server: {nickname} is online!", client)
+    def cmd_create_room(self, session, msg):
+        room = msg.get("room")
+        if not isinstance(room, str) or not ROOM_RE.match(room):
+            return session.error("Room names: 1-30 letters, digits, - or _")
+        with self.lock:
+            if room in self.rooms:
+                return session.error(f"Room {room} already exists")
+            self.rooms[room] = {session.nick.lower()}
+            session.rooms.add(room)
+        logger.info("%s created room %s", session.nick, room)
+        session.info(f"Room {room} created successfully!")
 
-                logger.info("Starting handler thread", extra={"nickname": nickname})
-                thread = threading.Thread(target=self.handle, args=(client,))
-                thread.start()
+    def cmd_join(self, session, msg):
+        room = msg.get("room")
+        with self.lock:
+            members = self.rooms.get(room) if isinstance(room, str) else None
+            if members is None:
+                return session.error("Room does not exist")
+            if session.nick.lower() in members:
+                return session.error(f"You are already a member of {room}")
+            members.add(session.nick.lower())
+            session.rooms.add(room)
+        session.info(f"Joined room {room} successfully!")
 
-            except KeyboardInterrupt:
-                # manual shutdown
-                logger.info("Server shutting down")
-                self.server.close()
-                sys.exit()
+    def cmd_leave(self, session, msg):
+        room = msg.get("room")
+        with self.lock:
+            members = self.rooms.get(room) if isinstance(room, str) else None
+            if members is None or session.nick.lower() not in members:
+                return session.error("Room does not exist or you are not a member")
+            members.discard(session.nick.lower())
+            session.rooms.discard(room)
+        session.info(f"Left room {room}")
 
-            except Exception:
-                # unrecoverable server-level error
-                logger.exception("Fatal server error")
-                self.server.close()
-                sys.exit()
+    def cmd_rooms(self, session, msg):
+        with self.lock:
+            names = sorted(self.rooms)
+        session.send({"type": "rooms", "rooms": names})
 
+    def cmd_room_msg(self, session, msg):
+        room, text = msg.get("room"), clean_text(msg.get("text"))
+        if text is None or not isinstance(room, str):
+            return session.error("Invalid message")
+        with self.lock:
+            members = self.rooms.get(room)
+            # authorisation: only members may post
+            if members is None or session.nick.lower() not in members:
+                return session.error("Room does not exist or you are not a member")
+            targets = list(members)
+        frame = {"type": "room_msg", "room": room, "from": session.nick,
+                 "time": self._stamp(), "text": text}
+        for s in self._snapshot(nicks=targets):
+            s.send(frame)
 
-# ---------------- MAIN ----------------
+    def cmd_quit(self, session, msg):
+        session.send({"type": "bye"})
+        return "quit"
+
+    HANDLERS = {
+        "members": cmd_members, "hide": cmd_hide, "reveal": cmd_reveal,
+        "broadcast": cmd_broadcast, "dm": cmd_dm, "create_room": cmd_create_room,
+        "join": cmd_join, "leave": cmd_leave, "rooms": cmd_rooms,
+        "room_msg": cmd_room_msg, "quit": cmd_quit,
+    }
+
 
 if __name__ == "__main__":
+    p = argparse.ArgumentParser(description="TLS chat server")
+    p.add_argument("host", nargs="?", default="127.0.0.1", help="address to bind")
+    p.add_argument("port", nargs="?", type=int, default=44444, help="port to listen on")
+    p.add_argument("--cert", default="certs/server.crt")
+    p.add_argument("--key", default="certs/server.key")
+    p.add_argument("--users", default="users.json", help="credential store path")
+    args = p.parse_args()
 
-    args = argparse.ArgumentParser(description="Server is on...")
-    args.add_argument('host', nargs='?', type=str, default='127.0.0.1', help='Server IP address')
-    args.add_argument('port', nargs='?', type=int, default=44444, help='Server port number')
-    arguments = args.parse_args()
-
-    # parse arguments to Server class
-    server = Server(arguments.host, arguments.port)
-    server.receive()  # start listening
-
+    server = Server(args.host, args.port, args.cert, args.key, args.users)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        logger.info("Server shutting down")
+        server.close()

@@ -1,0 +1,4 @@
+__pycache__/
+certs/
+users.json
+users.json.tmp
