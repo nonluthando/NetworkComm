@@ -1,132 +1,155 @@
+import argparse
+import getpass
 import socket
+import ssl
 import threading
 import time
 
-COMMANDS = {
-    "MEMBERS": "/members",
-    "BROADCAST": "/broadcast",
-    "HIDE": "/hide",
-    "REVEAL": "/reveal",
-    "CREATE_ROOM": "/create_room",
-    "GET_ROOMS": "/get_rooms",
-    "JOIN": "/join",
-    "LEAVE": "/leave",
-    "ROOM": "/room",
-    "DM": "/dm",
-    "QUIT": "/quit"
-}
-
-FORMAT = "utf-8"  # must match server
+from protocol import ProtocolError, recv_frame, send_frame
 
 
-def receive(client_sock):
+def show(msg):
+    """Render one server frame."""
+    kind = msg.get("type")
+    if kind == "broadcast":
+        print(f"\n──────────────\n{msg['from']}  {msg['time']}\n{msg['text']}\n──────────────")
+    elif kind == "dm":
+        print(f"\n[DM | {msg['time']}]\n{msg['from']}: {msg['text']}")
+    elif kind == "room_msg":
+        print(f"\n[{msg['room']} | {msg['time']}]\n{msg['from']}: {msg['text']}")
+    elif kind == "members":
+        print("Active chat members are:")
+        for i, name in enumerate(msg["users"], start=1):
+            print(f"{i}. {name}")
+    elif kind == "rooms":
+        print(("Rooms:\n" + "\n".join(msg["rooms"])) if msg["rooms"] else "No rooms available")
+    elif kind == "error":
+        print(f"Error: {msg['text']}")
+    elif kind == "bye":
+        print("Server: Bye")
+    else:
+        print(msg.get("text", ""))
+
+
+def receive(sock):
     # continuously listen for server messages
     while True:
         try:
-            data = client_sock.recv(1024)
-            if not data:
-                break
-            print(data.decode(FORMAT))
-        except OSError:
+            show(recv_frame(sock))
+        except (OSError, ProtocolError):
             break
 
 
-def send(client_sock, msg):
-    client_sock.send(msg.encode(FORMAT))
-
-
-def main():
-    host = input("Enter server IP address: ")
-    port = int(input("Enter server port number: "))
-    nickname = input("Enter your nickname: ")
-
-    client_sock = None
-    for attempt in range(1, 6):
+def connect(host, port, cafile, attempts=5):
+    # the context verifies the server certificate and hostname; it is never disabled
+    ctx = ssl.create_default_context(cafile=cafile)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    for attempt in range(1, attempts + 1):
         try:
-            client_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            client_sock.connect((host, port))
-            break
+            raw = socket.create_connection((host, port), timeout=10)
         except OSError:
-            client_sock.close()
-            client_sock = None
-            print(f"Server unavailable, retrying ({attempt}/5)...")
+            print(f"Server unavailable, retrying ({attempt}/{attempts})...")
             time.sleep(2)
-    if client_sock is None:
-        print("Could not connect to the server.")
-        return
+            continue
+        try:
+            sock = ctx.wrap_socket(raw, server_hostname=host)
+        except ssl.SSLError as exc:
+            raw.close()
+            print(f"TLS verification failed: {exc}")
+            return None
+        sock.settimeout(None)
+        return sock
+    print("Could not connect to the server.")
+    return None
 
-    # send nickname immediately after connecting
-    send(client_sock, nickname)
 
-    # start background thread to receive server messages
-    receive_thread = threading.Thread(
-        target=receive, args=(client_sock,), daemon=True
-    )
-    receive_thread.start()
-
+def authenticate(sock):
     while True:
-        print('Select an option from the menu:')
-        menu = """
+        mode = input("(l)ogin or (r)egister? ").strip().lower()
+        if mode not in ("l", "r"):
+            continue
+        user = input("Username: ").strip()
+        password = getpass.getpass("Password: ")
+        send_frame(sock, {"type": "login" if mode == "l" else "register",
+                          "user": user, "password": password})
+        reply = recv_frame(sock)
+        if reply.get("type") == "auth_ok":
+            print(f"Logged in as {reply['user']}")
+            return True
+        print(f"Error: {reply.get('text', 'authentication failed')}")
+
+
+MENU = """
                  a. view list of available users
                  b. send message to all connected users
-                 c. hide your connection 
+                 c. hide your connection
                  d. reveal
-                 e. create a new chatroom 
+                 e. create a new chatroom
                  f. get list of existing chatrooms
                  g. join a chatroom
                  h. send a message in a chatroom
                  i. exit a chatroom
                  j. quit
-                 k. send a direct message \n"""
-        choice = input(menu).strip().lower()
+                 k. send a direct message
+"""
 
-        if choice == "a":
-            send(client_sock, COMMANDS["MEMBERS"])
 
-        elif choice == "b":
-            send(client_sock, COMMANDS["BROADCAST"])
-            msg = input()  # server prompts for message
-            send(client_sock, msg)
+def main():
+    p = argparse.ArgumentParser(description="TLS chat client")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=44444)
+    p.add_argument("--cafile", default="certs/server.crt",
+                   help="certificate to trust (the server's, for self-signed setups)")
+    args = p.parse_args()
 
-        elif choice == "c":
-            send(client_sock, COMMANDS["HIDE"])
+    sock = connect(args.host, args.port, args.cafile)
+    if sock is None:
+        return
+    try:
+        authenticate(sock)
+    except (OSError, ProtocolError) as exc:
+        print(f"Connection lost during login: {exc}")
+        return
 
-        elif choice == "d":
-            send(client_sock, COMMANDS["REVEAL"])
+    threading.Thread(target=receive, args=(sock,), daemon=True).start()
 
-        elif choice == "e":
-            chatname = input("Please enter the name you want to give your chatroom:\n")
-            send(client_sock, f"{COMMANDS['CREATE_ROOM']} {chatname}")
+    try:
+        while True:
+            print("Select an option from the menu:")
+            choice = input(MENU).strip().lower()
 
-        elif choice == "f":
-            send(client_sock, COMMANDS["GET_ROOMS"])
-
-        elif choice == "g":
-            chatname = input("Please enter the name you want to join:\n")
-            send(client_sock, f"{COMMANDS['JOIN']} {chatname}")
-
-        elif choice == "h":
-            chatname = input("Please enter the name you want to send message to:\n")
-            txt = input("Please enter your message:\n")
-            send(client_sock, f"{COMMANDS['ROOM']} {chatname} {txt}")
-
-        elif choice == "i":
-            chatname = input("Please enter the name you want to exit:\n")
-            send(client_sock, f"{COMMANDS['LEAVE']} {chatname}")
-
-        elif choice == "k":
-            user = input("Enter the nickname to message:\n")
-            txt = input("Please enter your message:\n")
-            send(client_sock, f"{COMMANDS['DM']} {user} {txt}")
-
-        elif choice == "j":
-            print("Disconnecting...")
-            send(client_sock, COMMANDS["QUIT"])  # clean exit
-            client_sock.close()
-            break
-
-        else:
-            print("Invalid option. Please try again.")
+            if choice == "a":
+                send_frame(sock, {"type": "members"})
+            elif choice == "b":
+                send_frame(sock, {"type": "broadcast", "text": input("Message: ")})
+            elif choice == "c":
+                send_frame(sock, {"type": "hide"})
+            elif choice == "d":
+                send_frame(sock, {"type": "reveal"})
+            elif choice == "e":
+                send_frame(sock, {"type": "create_room", "room": input("Room name:\n")})
+            elif choice == "f":
+                send_frame(sock, {"type": "rooms"})
+            elif choice == "g":
+                send_frame(sock, {"type": "join", "room": input("Room to join:\n")})
+            elif choice == "h":
+                room = input("Room to send to:\n")
+                send_frame(sock, {"type": "room_msg", "room": room, "text": input("Message:\n")})
+            elif choice == "i":
+                send_frame(sock, {"type": "leave", "room": input("Room to leave:\n")})
+            elif choice == "k":
+                user = input("Nickname to message:\n")
+                send_frame(sock, {"type": "dm", "to": user, "text": input("Message:\n")})
+            elif choice == "j":
+                print("Disconnecting...")
+                send_frame(sock, {"type": "quit"})
+                break
+            else:
+                print("Invalid option. Please try again.")
+    except (OSError, ProtocolError) as exc:
+        print(f"Connection lost: {exc}")
+    finally:
+        sock.close()
 
 
 if __name__ == "__main__":
