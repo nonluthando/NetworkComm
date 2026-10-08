@@ -6,11 +6,17 @@ This repository contains a Python-based TCP client–server chat application des
 The system enables multiple clients to connect to a central server and exchange messages in real time using socket programming and multithreading.
 
 The server component was originally developed collaboratively as part of a group project, focusing on connection handling, concurrency control, and message routing.
-Additional enhancements to the server were independently implemented, including structured message logging, improved error handling, clearer message formatting, and more robust coordination between clients.
+Additional enhancements to the server were independently implemented, including timestamped event logging, error handling for abrupt client disconnects, clearer message formatting, chat room management and direct messaging.
 
-The client component was independently implemented, handling user interaction, server communication, connection retry logic, and asynchronous message reception.
+The client component was independently implemented, handling user interaction, server communication and asynchronous message reception.
 
 The project prioritises correctness, security and clear protocol design over UI complexity.
+
+## Contributions and history
+- **Group work:** the original server (connection handling, concurrency, message routing) and the protocol design described in the course report.
+- **My server extensions (Dec 2025):** event logging with the `logging` module, handling of abrupt client disconnects, timestamped message formatting, chat room management, direct messaging.
+- **My client:** written independently: menu interface, background receive thread, command table, clean `/quit`.
+- **Later review and hardening (Sep-Oct 2026, AI-assisted with Claude Code):** I reviewed the code for faults and directed fixes for a syntax error, an ASCII/UTF-8 mismatch, a nickname/client list desync after hiding, and unhandled disconnects. I then added TLS, authentication, length-prefixed framing, input validation, rate limiting, connection retry in the client, a 28-test suite and a threat model. See THREAT_MODEL.md.
 
 ## Key Features
 TCP socket–based communication, secured with TLS
@@ -18,14 +24,14 @@ TCP socket–based communication, secured with TLS
 • Length-prefixed JSON framing
 • Multithreaded server supporting multiple concurrent clients
 Server-side enhancements:
-• Structured logging of connections, disconnections, and message events
+• Timestamped event logging of connections, disconnections and room activity
 • Improved error handling for unexpected client disconnects
 • Clear, timestamped message formatting
 • Asynchronous message handling on the client side
 • Explicit, documented wire protocol (see protocol.py)
 • Broadcast messaging, private messaging, and chat rooms
 • User visibility controls (hide / reveal without disconnecting)
-• Graceful client connection retries when the server is unavailable
+• Client connection retries (5 attempts) when the server is unavailable
 • Clear separation between server and client responsibilities
 
 ## Architecture
